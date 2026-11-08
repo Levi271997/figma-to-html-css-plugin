@@ -63,6 +63,7 @@ async function convertSelection() {
     fonts: new Map(),
     classCount: 0,
     svgCount: 0,
+    inLink: false,
     counts: { layers: 0, text: 0, images: 0, svgs: 0 },
   };
   const body = await renderNode(root, 'NONE', ctx, { isRoot: true, isSection: false, offset: { x: 0, y: 0 } });
@@ -108,6 +109,14 @@ async function renderNode(node, parentMode, ctx, opts) {
   let attrs = ` data-figma-name="${escapeHtml(node.name)}" data-figma-type="${node.type}"`;
   if (opts.isSection) attrs += ` data-section="${escapeHtml(node.name)}"`;
 
+  // Buttons become links. Links cannot nest, so anything inside one stays a plain element.
+  const link = !opts.isRoot && !ctx.inLink ? linkFor(node) : null;
+  if (link) {
+    tag = 'a';
+    attrs = ` href="${escapeHtml(link.href)}"${link.newTab ? ' target="_blank" rel="noopener"' : ''}${attrs}`;
+    ctx.inLink = true;
+  }
+
   if (asSvg) {
     attrs += ' data-svg';
     inner = await svgMarkup(node, ctx);
@@ -143,8 +152,59 @@ async function renderNode(node, parentMode, ctx, opts) {
   if (inner && !asSvg && node.type !== 'TEXT' && !rules.some((r) => r.startsWith('position:'))) {
     rules.unshift('position: relative');
   }
+  if (link) {
+    ctx.inLink = false;
+    // <a> is inline by default; give it a box like the frame it came from.
+    if (!rules.some((r) => r.startsWith('display:'))) rules.push('display: block');
+    rules.push('cursor: pointer');
+  }
   rule.decls = dedupe(rules);
   return `<${tag} class="${cls}"${attrs}>${inner}</${tag}>`;
+}
+
+// ---------- Links ----------
+
+// A frame, component or instance is a link when its prototype opens a URL, or when its name
+// contains "button", "btn" or "cta", or starts with "link". The href comes from the prototype
+// "Open link" action, then from a hyperlink on text inside it, and falls back to "#".
+function linkFor(node) {
+  if (!['FRAME', 'COMPONENT', 'INSTANCE'].includes(node.type)) return null;
+  const proto = prototypeUrl(node);
+  if (proto) return proto;
+  if (!/\b(button|btn|cta)\b|^link\b/i.test(node.name)) return null;
+  return { href: textLinkInside(node) || '#', newTab: false };
+}
+
+function prototypeUrl(node) {
+  let reactions = [];
+  try {
+    reactions = node.reactions || [];
+  } catch (e) {
+    return null;
+  }
+  for (const r of reactions) {
+    const actions = r.actions || (r.action ? [r.action] : []);
+    for (const a of actions) {
+      if (a && a.type === 'URL' && a.url) return { href: a.url, newTab: !!a.openInNewTab };
+    }
+  }
+  return null;
+}
+
+function textLinkInside(node) {
+  if (!('findAll' in node)) return null;
+  for (const t of node.findAll((n) => n.type === 'TEXT')) {
+    try {
+      const h = t.hyperlink;
+      if (h && h !== figma.mixed && h.type === 'URL') return h.value;
+      for (const seg of t.getStyledTextSegments(['hyperlink'])) {
+        if (seg.hyperlink && seg.hyperlink.type === 'URL') return seg.hyperlink.value;
+      }
+    } catch (e) {
+      // Ignore unreadable text and keep looking.
+    }
+  }
+  return null;
 }
 
 // ---------- Position and size ----------
@@ -468,7 +528,13 @@ async function svgMarkup(node, ctx) {
   try {
     svg = await node.exportAsync({ format: 'SVG_STRING' });
   } catch (e) {
-    svg = utf8Decode(await node.exportAsync({ format: 'SVG' }));
+    try {
+      svg = utf8Decode(await node.exportAsync({ format: 'SVG' }));
+    } catch (e2) {
+      // Figma refuses to export layers with nothing visible (empty vectors, hidden children,
+      // no fills or strokes). Keep the empty box so the layout is unchanged instead of failing the whole conversion.
+      return '';
+    }
   }
   ctx.counts.svgs++;
   // Prefix ids so gradients, masks and clip paths from different icons cannot collide in one page.
@@ -540,7 +606,7 @@ function textContent(node, cls, ctx) {
       html = `<span class="${spanCls}">${html}</span>`;
     }
     const link = seg.hyperlink && seg.hyperlink.type === 'URL' ? seg.hyperlink.value : null;
-    if (link) html = `<a href="${escapeHtml(link)}">${html}</a>`;
+    if (link && !ctx.inLink) html = `<a href="${escapeHtml(link)}">${html}</a>`;
     inner += html;
   });
 

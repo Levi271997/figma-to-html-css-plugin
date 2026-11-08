@@ -38,6 +38,7 @@ Layer names change the output:
 
 - **Text layers** can force a tag by starting with `h1` to `h6` or `p`, e.g. `h2 Pricing`. Without a prefix, the tag is picked from the largest font size in the layer.
 - **Frames, groups and components** whose name starts with `icon` or `svg`, e.g. `icon/arrow`, are exported as inline SVG.
+- **Buttons become links.** A frame, component or instance becomes an `<a>` when its name contains `button`, `btn` or `cta` (e.g. `Button/Primary`), when its name starts with `link`, or when it has a prototype "Open link" interaction. The `href` comes from that interaction, then from a hyperlink on text inside it, and is `#` otherwise.
 - **CSS class names** come from layer names. A layer called `Hero Card` gets a class like `hero-card-12`, so clear layer names give readable CSS.
 - **Direct children of the selected frame** get a `data-section="<layer name>"` attribute, which makes page sections easy to find in the output.
 
