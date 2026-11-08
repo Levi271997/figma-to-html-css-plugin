@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  /* Figma injects --figma-color-* when the plugin opens with themeColors: true. */
+  :root {
+    --bg: var(--figma-color-bg, #ffffff);
+    --bg2: var(--figma-color-bg-secondary, #f5f5f5);
+    --fg: var(--figma-color-text, #1e1e1e);
+    --muted: var(--figma-color-text-secondary, #6f6f6f);
+    --border: var(--figma-color-border, #e6e6e6);
+    --brand: var(--figma-color-bg-brand, #0d99ff);
+    --on-brand: var(--figma-color-text-onbrand, #ffffff);
+    --error: var(--figma-color-text-danger, #d1242f);
+  }
+  html, body { height: 100%; }
+  body { margin: 0; display: flex; flex-direction: column; font: 12px/1.5 Inter, system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+  header { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .grow { flex: 1; min-width: 0; }
+  button, select { font: inherit; color: var(--fg); background: transparent; border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; }
+  button { cursor: pointer; }
+  button.primary { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  select { background: var(--bg); }
+  #status { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #status.error { color: var(--error); white-space: normal; }
+  .tabs { display: flex; gap: 4px; padding: 0 12px; border-bottom: 1px solid var(--border); }
+  .tab { border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 8px; color: var(--muted); }
+  .tab[aria-selected="true"] { border-bottom-color: var(--brand); color: var(--fg); font-weight: 600; }
+  main { flex: 1; min-height: 0; overflow: auto; background: var(--bg2); }
+  .empty { padding: 24px 16px; color: var(--muted); }
+  #preview { padding: 12px 16px; }
+  #frame-box { overflow: hidden; border: 1px solid var(--border); background: #ffffff; }
+  #frame-box iframe { display: block; border: 0; background: #ffffff; transform-origin: 0 0; }
+  pre { margin: 0; padding: 12px 16px; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
+  footer { padding: 8px 16px; border-top: 1px solid var(--border); }
+  #stats { color: var(--muted); }
+</style>
+</head>
+<body>
+  <header>
+    <div class="row">
+      <button id="convert" class="primary" disabled>Convert selection</button>
+      <label class="row">Output
+        <select id="format">
+          <option value="split">HTML + CSS files</option>
+          <option value="single">Single HTML file</option>
+        </select>
+      </label>
+    </div>
+    <div id="status" role="status">Select one frame or section.</div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab" role="tab" data-tab="preview" aria-selected="true">Preview</button>
+    <button class="tab" role="tab" data-tab="html" aria-selected="false">HTML</button>
+    <button class="tab" role="tab" data-tab="css" aria-selected="false">CSS</button>
+  </nav>
+
+  <main>
+    <section id="panel-preview" data-panel="preview">
+      <div class="empty">Convert a frame to see the preview.</div>
+    </section>
+    <pre id="panel-html" data-panel="html" hidden></pre>
+    <pre id="panel-css" data-panel="css" hidden></pre>
+  </main>
+
+  <footer class="row">
+    <span id="stats" class="grow"></span>
+    <button id="copy" disabled>Copy HTML</button>
+    <button id="download" class="primary" disabled>Download</button>
+  </footer>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $('status');
+    const formatEl = $('format');
+    let result = null;
+    let tab = 'preview';
+    let selectionOk = false;
+    let busy = false;
+
+    function setStatus(text, isError) {
+      statusEl.textContent = text;
+      statusEl.className = isError ? 'error' : '';
+    }
+
+    function updateConvertButton() {
+      $('convert').disabled = busy || !selectionOk;
+    }
+
+    function escapeHtml(text) {
+      return String(text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    }
+
+    function buildDocument(styleTag) {
+      return [
+        '<!doctype html>',
+        '<html lang="en">',
+        '<head>',
+        '<meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        `<title>${escapeHtml(result.title)}</title>`,
+        ...result.fontLinks,
+        styleTag,
+        '</head>',
+        '<body>',
+        result.body,
+        '</body>',
+        '</html>',
+        '',
+      ].join('\n');
+    }
+
+    function singleHtml() {
+      return buildDocument(`<style>\n${result.css}</style>`);
+    }
+
+    function splitHtml() {
+      return buildDocument(`<link rel="stylesheet" href="${result.fileBase}.css">`);
+    }
+
+    function currentHtml() {
+      return formatEl.value === 'single' ? singleHtml() : splitHtml();
+    }
+
+    // Embedded images make the code unreadable, so the code view shortens them. Copy and download keep them.
+    function shorten(text) {
+      return text.replace(/data:([\w/+.-]+);base64,([A-Za-z0-9+/=]{200,})/g,
+        (m, mime, data) => `data:${mime};base64,…(${Math.round((data.length * 3) / 4 / 1024)} KB image)`);
+    }
+
+    function render() {
+      document.querySelectorAll('.tab').forEach((t) => t.setAttribute('aria-selected', String(t.dataset.tab === tab)));
+      document.querySelectorAll('[data-panel]').forEach((p) => { p.hidden = p.dataset.panel !== tab; });
+      $('copy').textContent = tab === 'css' ? 'Copy CSS' : 'Copy HTML';
+      $('copy').disabled = $('download').disabled = !result;
+      if (!result) return;
+      $('panel-html').textContent = shorten(currentHtml());
+      $('panel-css').textContent = shorten(result.css);
+    }
+
+    function renderPreview() {
+      const panel = $('panel-preview');
+      panel.textContent = '';
+      const wrap = document.createElement('div');
+      wrap.id = 'preview';
+      const box = document.createElement('div');
+      box.id = 'frame-box';
+      const frame = document.createElement('iframe');
+      // allow-same-origin without allow-scripts: the page cannot run code, but its height can be measured.
+      frame.setAttribute('sandbox', 'allow-same-origin');
+      frame.srcdoc = singleHtml();
+      box.appendChild(frame);
+      wrap.appendChild(box);
+      panel.appendChild(wrap);
+
+      let height = result.height;
+      const fit = () => {
+        const avail = Math.max(100, panel.clientWidth - 34);
+        const scale = Math.min(1, avail / result.width);
+        frame.style.width = `${result.width}px`;
+        frame.style.height = `${height}px`;
+        frame.style.transform = `scale(${scale})`;
+        box.style.width = `${result.width * scale}px`;
+        box.style.height = `${height * scale}px`;
+      };
+      frame.onload = () => {
+        try {
+          height = Math.max(result.height, frame.contentDocument.documentElement.scrollHeight);
+        } catch (e) {
+          // Keep the Figma height if the document cannot be read.
+        }
+        fit();
+      };
+      window.onresize = fit;
+      fit();
+    }
+
+    function copyText(text) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      ta.remove();
+      return ok;
+    }
+
+    function download(text, filename, type) {
+      const url = URL.createObjectURL(new Blob([text], { type }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    document.querySelectorAll('.tab').forEach((t) => {
+      t.onclick = () => { tab = t.dataset.tab; render(); };
+    });
+
+    formatEl.onchange = render;
+
+    $('convert').onclick = () => {
+      busy = true;
+      updateConvertButton();
+      setStatus('Converting…');
+      parent.postMessage({ pluginMessage: { type: 'convert' } }, '*');
+    };
+
+    $('copy').onclick = () => {
+      const text = tab === 'css' ? result.css : currentHtml();
+      setStatus(copyText(text) ? `Copied ${tab === 'css' ? 'CSS' : 'HTML'}.` : 'Copy failed. Use Download instead.', false);
+    };
+
+    $('download').onclick = () => {
+      if (formatEl.value === 'single') {
+        download(singleHtml(), `${result.fileBase}.html`, 'text/html');
+        setStatus(`Downloaded ${result.fileBase}.html`);
+        return;
+      }
+      download(splitHtml(), `${result.fileBase}.html`, 'text/html');
+      // A short gap so the browser does not drop the second download.
+      setTimeout(() => download(result.css, `${result.fileBase}.css`, 'text/css'), 300);
+      setStatus(`Downloaded ${result.fileBase}.html and ${result.fileBase}.css (keep them in the same folder).`);
+    };
+
+    window.onmessage = (event) => {
+      const msg = event.data.pluginMessage;
+      if (!msg) return;
+
+      if (msg.type === 'selection') {
+        selectionOk = msg.ok;
+        updateConvertButton();
+        if (!busy) {
+          if (msg.ok) setStatus(`Selected: ${msg.label}`);
+          else setStatus(msg.count > 1 ? 'Select only one frame or section.' : 'Select one frame or section.');
+        }
+        return;
+      }
+
+      if (msg.type === 'error') {
+        busy = false;
+        updateConvertButton();
+        setStatus(msg.message, true);
+        return;
+      }
+
+      if (msg.type === 'result') {
+        busy = false;
+        updateConvertButton();
+        result = msg;
+        const s = msg.stats;
+        $('stats').textContent = `${s.layers} layers · ${s.text} text · ${s.images} images · ${s.svgs} SVG`;
+        setStatus(`Converted ${msg.title}.`);
+        renderPreview();
+        render();
+      }
+    };
+  </script>
+</body>
+</html>
