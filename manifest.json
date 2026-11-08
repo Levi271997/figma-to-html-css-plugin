@@ -1,6 +1,6 @@
 {
-  "name": "Digitalfeet Figma to HTML",
-  "id": "digitalfeet-figma-to-html",
+  "name": "Figma to HTML/CSS",
+  "id": "figma-to-html-css",
   "api": "1.0.0",
   "main": "code.js",
   "ui": "ui.html",

@@ -1,4 +1,4 @@
-// Digitalfeet Figma to HTML: plugin sandbox.
+// Figma to HTML/CSS: plugin sandbox.
 // Walks the selected frame and sends the markup, CSS and font links to the UI,
 // which builds either one self-contained HTML file or an HTML + CSS pair.
 // Plain JavaScript on purpose, so there is no build step and designers can import it directly.
